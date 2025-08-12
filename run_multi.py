@@ -3,7 +3,7 @@ from multi_pipe import PipeSpec, solve_pipes
 
 def main():
     # World bounds
-    y_min, y_max = 0, 6
+    y_min, y_max = 0, 14
 
     # Start
     y0 = 3

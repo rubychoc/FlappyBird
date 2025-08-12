@@ -21,6 +21,7 @@ class MultiRunResult:
     total_nodes_generated: int
     total_elapsed_sec: float
     per_pipe: List[SearchResult]
+    # combined path: (pipe_index, state, action)
     full_path: List[Tuple[int, BirdState, Optional[int]]]
 
 def pick_algo(name: str) -> Callable:
@@ -38,7 +39,6 @@ def solve_pipes(
     y_max: int,
     pipes: List[PipeSpec],
     algo: str,
-    stop_on_fail: bool = False,   # <- NEW: keep going by default
 ) -> MultiRunResult:
     """
     For each pipe i:
@@ -56,7 +56,6 @@ def solve_pipes(
     total_nodes_generated = 0
     total_elapsed_sec = 0.0
 
-    found_all = True
     y_current = initial_y
 
     for i, p in enumerate(pipes):
@@ -64,34 +63,41 @@ def solve_pipes(
                            lower_edge_L=p.L, upper_edge_U=p.U,
                            y_min=y_min, y_max=y_max)
         h = clicks_heuristic_factory(p.L)
+
+        # Run the chosen algorithm
         res = algo_fn(problem, h)  # type: ignore[arg-type]
         per.append(res)
-
         total_nodes_expanded += res.nodes_expanded
         total_nodes_generated += res.nodes_generated
         total_elapsed_sec += res.elapsed_sec
 
-        if res.found:
-            total_cost += res.cost
-            # Stitch path (skip first duplicated state for i>0)
-            for idx, (s, a) in enumerate(res.path):
-                if i > 0 and idx == 0:
-                    continue
-                full_path.append((i, s, a))
-            # Re-anchor y for next segment at the terminal state's y (x == -1)
-            y_current = res.path[-1][0].y
-        else:
-            found_all = False
-            # Still record a marker so you can see the failure in the combined path
-            # (you can omit this if you prefer)
-            full_path.append((i, BirdState(y_current, p.distance), None))
-            if stop_on_fail:
-                break
-            # Do NOT re-anchor y if you didn't pass this pipe; start the next segment
-            # from the same current y (you can customize this policy).
+        if not res.found:
+            # Return what we have so far; found_all=False
+            return MultiRunResult(
+                found_all=False,
+                total_cost=total_cost,
+                total_nodes_expanded=total_nodes_expanded,
+                total_nodes_generated=total_nodes_generated,
+                total_elapsed_sec=total_elapsed_sec,
+                per_pipe=per,
+                full_path=full_path,
+            )
+
+        total_cost += res.cost
+
+        # Stitch path: skip the very first state (duplicate between segments)
+        # but keep all actions. Tag with pipe index i.
+        # res.path is List[(state, action)] where first action is usually None.
+        for idx, (s, a) in enumerate(res.path):
+            if i > 0 and idx == 0:
+                continue  # avoid duplicating the prior segment's terminal state visually
+            full_path.append((i, s, a))
+
+        # Re-anchor for next pipe: carry forward the terminal y at x==-1
+        y_current = res.path[-1][0].y
 
     return MultiRunResult(
-        found_all=found_all,
+        found_all=True,
         total_cost=total_cost,
         total_nodes_expanded=total_nodes_expanded,
         total_nodes_generated=total_nodes_generated,
