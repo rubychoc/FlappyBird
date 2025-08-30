@@ -1,0 +1,440 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flappy 1D — Search Visualizer (Standalone)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 UMD -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel for in-browser JSX transform (dev only) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-sky-200 to-sky-50 text-slate-800">
+  <div id="root"></div>
+
+  <!-- Use Babel with explicit presets to ensure JSX compiles correctly -->
+  <script type="text/babel" data-presets="env,react">
+    const { useState, useMemo, useEffect, useRef } = React;
+
+    // ------------------------------
+    // Search core (JS-only, no deps)
+    // ------------------------------
+    function formatTime(ms) {
+      if (!Number.isFinite(ms)) return '∞';
+      if (ms >= 1) return `${ms.toFixed(2)} ms`;
+      const us = ms * 1000;
+      if (us >= 1) return `${us.toFixed(1)} µs`;
+      const ns = us * 1000;
+      return `${Math.round(ns)} ns`;
+    }
+    const CLICK = 1; const NO_CLICK = 0;
+    const isGoal = (s) => s.x === -1;
+    const key = (s) => `${s.y}|${s.x}`;
+
+    function successors(s, b, L, U) {
+      const out = [];
+      const x2 = s.x - 1;
+      const up = { y: s.y + 1, x: x2 };
+      const dn = { y: s.y - 1, x: x2 };
+      const safe = (st) => {
+        // Disallow touching ground or ceiling; y must stay strictly within (yMin, yMax)
+        if (st.y <= b.yMin || st.y >= b.yMax) return false;
+        // At the pipe (x == 0), bird must be strictly inside the gap: y in (L, U)
+        if (st.x === 0) {
+          if (st.y <= L) return false;   // must be at least one above L
+          if (st.y >= U) return false;   // must be strictly below U
+        }
+        return true;
+      };
+      if (safe(up)) out.push({ action: CLICK, next: up, cost: 1 });
+      if (safe(dn)) out.push({ action: NO_CLICK, next: dn, cost: 0 });
+      return out;
+    }
+
+    // Heuristic: max(0, ceil(((L+1) - (y - x)) / 2))
+    function hClicks(s, L) {
+      const need = (L + 1) - (s.y - s.x);
+      return need <= 0 ? 0 : Math.ceil(need / 2);
+    }
+
+    class MinHeap {
+      constructor() { this.a = []; }
+      push(k1, k2, i, v) { this.a.push({ k1, k2, i, v }); this._up(this.a.length - 1); }
+      peek() { return this.a[0]; }
+      pop() { const n = this.a.length; if (!n) return undefined; const top = this.a[0]; const last = this.a.pop(); if (n > 1) { this.a[0] = last; this._down(0); } return top; }
+      _less(i, j) { const A = this.a[i], B = this.a[j]; if (A.k1 !== B.k1) return A.k1 < B.k1; if (A.k2 !== B.k2) return A.k2 < B.k2; return A.i < B.i; }
+      _up(i) { while (i > 0) { const p = (i - 1) >> 1; if (!this._less(i, p)) break; [this.a[i], this.a[p]] = [this.a[p], this.a[i]]; i = p; } }
+      _down(i) { const n = this.a.length; while (true) { const l = i * 2 + 1, r = l + 1; let m = i; if (l < n && this._less(l, m)) m = l; if (r < n && this._less(r, m)) m = r; if (m === i) break; [this.a[i], this.a[m]] = [this.a[m], this.a[i]]; i = m; } }
+      get size() { return this.a.length; }
+    }
+
+    function astarEarly(start, bounds, L, U) {
+      const t0 = performance.now();
+      let nodesExpanded = 0, nodesGenerated = 0;
+      const h0 = hClicks(start, L);
+      const open = new MinHeap();
+      let counter = 0;
+      open.push(h0, 0, counter++, { ...start, g: 0, h: h0, parent: null, action: null });
+      const bestG = new Map([[key(start), 0]]);
+      let Uinc = Infinity; let bestGoal = null;
+      while (open.size) {
+        const top = open.peek(); if (top.k1 >= Uinc) break;
+        const cur = open.pop().v; const kcur = key(cur);
+        if (cur.g > (bestG.get(kcur) ?? Infinity)) continue;
+        nodesExpanded++;
+        for (const { action, next, cost } of successors(cur, bounds, L, U)) {
+          const g2 = cur.g + cost;
+          if (isGoal(next)) { if (g2 < Uinc) { Uinc = g2; bestGoal = { ...next, g: g2, h: 0, parent: cur, action }; } continue; }
+          if (g2 >= (bestG.get(key(next)) ?? Infinity)) continue;
+          const h2 = hClicks(next, L); nodesGenerated++; const f2 = g2 + h2;
+          if (f2 >= Uinc) continue;
+          open.push(f2, g2, counter++, { ...next, g: g2, h: h2, parent: cur, action });
+          bestG.set(key(next), g2);
+        }
+      }
+      const t1 = performance.now();
+      if (!bestGoal) return { found: false, cost: Infinity, nodesExpanded, nodesGenerated, elapsedMs: t1 - t0, algorithm: 'A*-EARLY', path: [] };
+      const path = []; let n = bestGoal; while (n) { path.push({ state: { y: n.y, x: n.x }, action: n.action ?? null }); n = n.parent; } path.reverse();
+      return { found: true, cost: bestGoal.g, nodesExpanded, nodesGenerated, elapsedMs: t1 - t0, algorithm: 'A*-EARLY', path };
+    }
+
+    function idastar(start, bounds, L, U) {
+      const t0 = performance.now();
+      let nodesExpanded = 0, nodesGenerated = 1;
+      const root = { s: start, g: 0, h: hClicks(start, L), parent: null, action: null };
+      function dfs(node, bound) {
+        const f = node.g + node.h; if (f > bound) return [f, null]; if (isGoal(node.s)) return [f, node]; nodesExpanded++;
+        let minNext = Infinity; const succs = successors(node.s, bounds, L, U);
+        for (const { action, next, cost } of succs) {
+          const child = { s: next, g: node.g + cost, h: hClicks(next, L), parent: node, action };
+          nodesGenerated++; const [t, sol] = dfs(child, bound); if (sol) return [t, sol]; if (t < minNext) minNext = t;
+        }
+        return [minNext, null];
+      }
+      let bound = root.g + root.h;
+      while (true) {
+        const [t, sol] = dfs(root, bound);
+        if (sol) { const t1 = performance.now(); const path = []; let n = sol; while (n) { path.push({ state: n.s, action: n.action ?? null }); n = n.parent; } path.reverse(); return { found: true, cost: sol.g, nodesExpanded, nodesGenerated, elapsedMs: t1 - t0, algorithm: 'IDA*', path }; }
+        if (!isFinite(t)) { const t1 = performance.now(); return { found: false, cost: Infinity, nodesExpanded, nodesGenerated, elapsedMs: t1 - t0, algorithm: 'IDA*', path: [] }; }
+        bound = t;
+      }
+    }
+
+    function rbfs(start, bounds, L, U) {
+      const t0 = performance.now();
+      let nodesExpanded = 0, nodesGenerated = 1;
+      const root = { s: start, g: 0, h: hClicks(start, L), f: hClicks(start, L), parent: null, action: null };
+      function expand(n) {
+        nodesExpanded++; const kids = [];
+        for (const { action, next, cost } of successors(n.s, bounds, L, U)) {
+          const g2 = n.g + cost; const h2 = hClicks(next, L);
+          kids.push({ s: next, g: g2, h: h2, f: Math.max(g2 + h2, n.f), parent: n, action }); nodesGenerated++;
+        }
+        kids.sort((a,b)=> (a.f - b.f) || (a.g - b.g)); return kids;
+      }
+      function RBFS(node, fLimit) {
+        if (isGoal(node.s)) return [node, node.f];
+        let succs = expand(node); if (succs.length === 0) return [null, Infinity];
+        while (true) {
+          succs.sort((a,b)=> (a.f - b.f) || (a.g - b.g));
+          let best = succs[0]; const alternative = succs.length > 1 ? succs[1].f : Infinity;
+          if (best.f > fLimit) return [null, best.f];
+          const newLimit = Math.min(fLimit, alternative);
+          const [result, bestf] = RBFS(best, newLimit);
+          best.f = bestf; if (result) return [result, bestf];
+        }
+      }
+      const [sol] = RBFS(root, Infinity); const t1 = performance.now();
+      if (!sol) return { found: false, cost: Infinity, nodesExpanded, nodesGenerated, elapsedMs: t1 - t0, algorithm: 'ILBFS', path: [] };
+      const path = []; let n = sol; while (n) { path.push({ state: n.s, action: n.action ?? null }); n = n.parent; } path.reverse();
+      return { found: true, cost: sol.g, nodesExpanded, nodesGenerated, elapsedMs: t1 - t0, algorithm: 'ILBFS', path };
+    }
+
+    function solveCourse(initialY, bounds, pipes, algo) {
+      let yCur = initialY; let totalCost = 0; let nodesExpanded = 0, nodesGenerated = 0; let elapsedMs = 0; let fullPath = [];
+      function parityFeasible(y0, dist, L, U) {
+        const minY = L + 1, maxY = U - 1; if (minY > maxY) return false;
+        const parity = (y0 - dist) & 1; // parity of y at x=0
+        const first = ((minY & 1) === parity) ? minY : minY + 1;
+        return first <= maxY;
+      }
+      for (let i = 0; i < pipes.length; i++) {
+        const p = pipes[i]; const start = { y: yCur, x: p.distance };
+        if (!parityFeasible(yCur, p.distance, p.L, p.U)) {
+          // Impossible due to parity/strict constraints; short-circuit
+          const algoName = (algo === 'astar') ? 'A*-EARLY' : (algo === 'idastar') ? 'IDA*' : 'ILBFS';
+          return { found: false, cost: Infinity, nodesExpanded, nodesGenerated, elapsedMs, algorithm: algoName, path: fullPath };
+        }
+        const res = (algo === 'astar') ? astarEarly(start, bounds, p.L, p.U) : (algo === 'idastar') ? idastar(start, bounds, p.L, p.U) : rbfs(start, bounds, p.L, p.U);
+        nodesExpanded += res.nodesExpanded; nodesGenerated += res.nodesGenerated; elapsedMs += res.elapsedMs;
+        if (!res.found) return { found: false, cost: Infinity, nodesExpanded, nodesGenerated, elapsedMs, algorithm: res.algorithm, path: fullPath };
+        totalCost += res.cost; const startIndex = (i === 0) ? 0 : 1; for (let k = startIndex; k < res.path.length; k++) fullPath.push(res.path[k]);
+        yCur = res.path[res.path.length - 1].state.y;
+      }
+      return { found: true, cost: totalCost, nodesExpanded, nodesGenerated, elapsedMs, algorithm: algo.toUpperCase(), path: fullPath };
+    }
+
+    function buildWorldTimeline(paths, pipes) {
+      const result = {}; for (const [name, path] of Object.entries(paths)) { const coords = []; let w = 0; for (let i = 0; i < path.length; i++) { coords.push({ x: w, y: path[i].state.y }); w += 1; } result[name] = coords; } return result;
+    }
+
+    function useRafLoop(active, cb) {
+      const cbRef = useRef(cb); cbRef.current = cb;
+      const lastRef = useRef(performance.now());
+      useEffect(() => {
+        let rafId;
+        function loop(now) {
+          const delta = now - lastRef.current; lastRef.current = now;
+          if (active) cbRef.current(now, delta);
+          rafId = requestAnimationFrame(loop);
+        }
+        rafId = requestAnimationFrame(loop);
+        return () => cancelAnimationFrame(rafId);
+      }, [active]);
+    }
+
+    function BirdTrail({ coords, color, camLeft, cell, yMax, label, idx }) {
+      const past = coords.slice(0, idx + 1);
+      const pts = past.map(p => `${(p.x - camLeft) * cell},${(yMax - (p.y + 1)) * cell}`).join(' ');
+      const cur = coords[Math.min(idx, coords.length - 1)] || { x: 0, y: 0 };
+      const cx = (cur.x - camLeft) * cell; const cy = (yMax - (cur.y + 1)) * cell;
+      return (
+        <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
+          <polyline points={pts} fill="none" stroke={color} strokeWidth={2} opacity={0.9} />
+          <g transform={`translate(${cx},${cy})`}>
+            {/* Bird body */}
+            <ellipse cx={0} cy={0} rx={9} ry={7} fill="#fde047" stroke="#111827" strokeWidth={1.5} />
+            {/* Wing */}
+            <ellipse cx={-3} cy={-1} rx={5} ry={4} fill="#fef08a" stroke="#111827" strokeWidth={1} />
+            {/* Beak */}
+            <polygon points={`7,-1 12,-3 12,1`} fill="#f97316" stroke="#111827" strokeWidth={0.8} />
+            {/* Eye */}
+            <circle cx={2} cy={-3} r={2.3} fill="#fff" stroke="#111827" strokeWidth={1} />
+            <circle cx={2.8} cy={-3} r={1} fill="#111827" />
+            {/* Tail */}
+            <polygon points={`-8,-1 -12,0 -8,1`} fill={color} />
+            {/* Label */}
+            <rect x={-20} y={-22} width={40} height={14} rx={7} fill={color} opacity={0.15} />
+            <text x={0} y={-12} textAnchor="middle" fontSize={10} fill={color} style={{fontWeight:600}}>{label}</text>
+          </g>
+        </svg>
+      );
+    }
+
+    function App() {
+      const yMin = 0, yMax = 12; const [initialY, setInitialY] = useState(6);
+      const [pipes, setPipes] = useState([
+        { distance: 12, L: 4, U: 8 },
+        { distance: 10, L: 3, U: 7 },
+        { distance: 14, L: 5, U: 9 },
+      ]);
+      const bounds = { yMin, yMax };
+      const [showA, setShowA] = useState(true);
+      const [showI, setShowI] = useState(true);
+      const [showR, setShowR] = useState(true);
+
+      const results = useMemo(() => {
+        const A = solveCourse(initialY, bounds, pipes, 'astar');
+        const I = solveCourse(initialY, bounds, pipes, 'idastar');
+        const R = solveCourse(initialY, bounds, pipes, 'ilbfs');
+        return { A, I, R };
+      }, [initialY, JSON.stringify(pipes)]);
+
+      const timelines = useMemo(() => {
+        const paths = {};
+        if (showA && results.A.found) paths['A*'] = results.A.path;
+        if (showI && results.I.found) paths['IDA*'] = results.I.path;
+        if (showR && results.R.found) paths['ILBFS'] = results.R.path;
+        return buildWorldTimeline(paths, pipes);
+      }, [results, showA, showI, showR, JSON.stringify(pipes)]);
+
+      const [playing, setPlaying] = useState(true); const [speed, setSpeed] = useState(1); const [t, setT] = useState(0);
+      const totalSteps = useMemo(() => Math.max(timelines['A*']?.length ?? 0, timelines['IDA*']?.length ?? 0, timelines['ILBFS']?.length ?? 0), [timelines]);
+      useRafLoop(playing, (_, delta) => { setT(prev => { const next = prev + delta/1000 * speed; const maxT = totalSteps > 0 ? totalSteps - 1 : 0; return Math.min(next, maxT); }); });
+      const currentIdx = Math.floor(t);
+
+      const cell = 28; const heightPx = (yMax - yMin + 3) * cell; const widthCells = 24; const widthPx = widthCells * cell;
+      const worldWidthCells = useMemo(() => pipes.reduce((acc, p) => acc + p.distance + 1, 0), [pipes]);
+      const pipeWorldXs = useMemo(() => { const xs = []; let acc = 0; for (const p of pipes) { xs.push(acc + p.distance); acc += p.distance + 1; } return xs; }, [pipes]);
+      const camLeft = Math.max(0, currentIdx - Math.floor(widthCells * 0.3));
+
+      return (
+        <div className="w-full h-full">
+          <div className="max-w-6xl mx-auto p-4 grid grid-cols-1 gap-4">
+            <h1 className="text-2xl font-bold">Flappy 1D — Seach Visualizer</h1>
+            <p className="text-sm text-slate-600">Algorithms: <span className="font-mono">A*-EARLY</span>, <span className="font-mono">IDA*</span>, <span className="font-mono">ILBFS</span>. Cost: click=1, no-click=0. Heuristic: <span className="font-mono">max(0, ceil(((L+1) - (y - x)) / 2))</span>.</p>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="p-3 bg-white rounded-2xl shadow">
+                <div className="font-semibold mb-2">Course</div>
+                <div className="flex items-center gap-2 mb-2">
+                  <label className="text-sm w-20">Initial y</label>
+                  <input type="number" className="border rounded px-2 py-1 w-24" value={initialY} onChange={e=>setInitialY(parseInt(e.target.value||'0'))} />
+                </div>
+                <div className="text-xs text-slate-500">World y ∈ [{yMin}, {yMax}]</div>
+                <div className="mt-2">
+                  {pipes.map((p, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-1 text-sm">
+                      <span className="font-mono text-slate-500">#{i+1}</span>
+                      <label className="w-20">dist</label>
+                      <input type="number" className="border rounded px-1 w-16" value={p.distance} onChange={e=>{ const v = parseInt(e.target.value||'0'); const arr = [...pipes]; arr[i] = { ...arr[i], distance: v }; setPipes(arr); }} />
+                      <label className="w-10">L</label>
+                      <input type="number" className="border rounded px-1 w-14" value={p.L} onChange={e=>{ const v = parseInt(e.target.value||'0'); const arr = [...pipes]; arr[i] = { ...arr[i], L: v }; setPipes(arr); }} />
+                      <label className="w-10">U</label>
+                      <input type="number" className="border rounded px-1 w-14" value={p.U} onChange={e=>{ const v = parseInt(e.target.value||'0'); const arr = [...pipes]; arr[i] = { ...arr[i], U: v }; setPipes(arr); }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-3 bg-white rounded-2xl shadow">
+                <div className="font-semibold mb-2">Playback</div>
+                <div className="mt-4 flex items-center gap-2 text-sm">
+                  <button className="px-3 py-1 rounded bg-emerald-500 text-white shadow hover:bg-emerald-600" onClick={()=> setPlaying(p=>!p)}>{playing? 'Pause':'Play'}</button>
+                </div>
+                <div className="mt-3 flex items-center gap-2 text-sm">
+                  <label>Speed</label>
+                  <input type="range" min={0} max={5} step={0.1} value={speed} onChange={e=> setSpeed(parseFloat(e.target.value))} className="w-40" />
+                  <span className="tabular-nums w-10 text-right">{speed.toFixed(1)}x</span>
+                </div>
+                <div className="mt-3 flex items-center gap-2 text-sm">
+                  <label className="whitespace-nowrap">Step</label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(totalSteps-1,0)}
+                    step={1}
+                    value={currentIdx}
+                    onChange={e=>{ setPlaying(false); const v = parseInt(e.target.value||'0'); setT(v); }}
+                    className="w-40"
+                  />
+                  <span className="tabular-nums w-16 text-right">{currentIdx}/{Math.max(totalSteps-1,0)}</span>
+                  <button className="px-2 py-1 rounded bg-slate-200 hover:bg-slate-300" onClick={()=>{ setPlaying(false); setT(0); }}>Reset</button>
+                </div>
+              </div>
+              <div className="p-3 bg-white rounded-2xl shadow">
+                <div className="font-semibold mb-2">Algorithms</div>
+                <label className="flex items-center gap-2 text-sm mb-1"><input type="checkbox" checked={showA} onChange={e=>setShowA(e.target.checked)} /><span className="text-sky-600">A*-EARLY</span></label>
+                <label className="flex items-center gap-2 text-sm mb-1"><input type="checkbox" checked={showI} onChange={e=>setShowI(e.target.checked)} /><span className="text-emerald-600">IDA*</span></label>
+                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={showR} onChange={e=>setShowR(e.target.checked)} /><span className="text-amber-600">ILBFS</span></label>
+              </div>
+            </div>
+
+            <div className="rounded-2xl">
+              <div className="text-sm text-slate-600 mb-2">Feel free to scroll the viewport to see the birds advance.</div>
+              <div className="flex items-start gap-4">
+                <Playfield timelines={timelines} pipes={pipes} yMin={yMin} yMax={yMax} currentIdx={Math.floor(t)} />
+                <aside className="flex-1 min-w-[260px]">
+                  <div className="sticky top-4">
+                    <div className="font-semibold mb-3">Metrics</div>
+                    {(() => {
+                      const cards = [];
+                      if (showA) cards.push({ r: results.A, dot: 'bg-sky-500' });
+                      if (showI) cards.push({ r: results.I, dot: 'bg-emerald-500' });
+                      if (showR) cards.push({ r: results.R, dot: 'bg-amber-500' });
+                      return cards.map(({ r, dot }, i) => (
+                        <div key={i} className="rounded-2xl border p-4 bg-white shadow-sm mb-3">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                              <span className={`w-3 h-3 rounded-full ${dot}`}></span>
+                              <div className="font-semibold tracking-wide">{r.algorithm}</div>
+                            </div>
+                            <div className="text-sm text-slate-500"><span className="font-mono tabular-nums">{formatTime(r.elapsedMs)}</span></div>
+                          </div>
+                          <div className="flex items-stretch justify-between gap-3">
+                            <div className="flex-1 min-w-[90px] bg-white rounded-xl border p-3 text-center">
+                              <div className="text-xs uppercase tracking-wide text-slate-500">Cost</div>
+                              <div className="mt-1 text-2xl font-mono tabular-nums">{Number.isFinite(r.cost)?r.cost.toFixed(0):'∞'}</div>
+                            </div>
+                            <div className="flex-1 min-w-[110px] bg-white rounded-xl border p-3 text-center">
+                              <div className="text-xs uppercase tracking-wide text-slate-500">Expanded</div>
+                              <div className="mt-1 text-2xl font-mono tabular-nums">{r.nodesExpanded}</div>
+                            </div>
+                            <div className="flex-1 min-w-[110px] bg-white rounded-xl border p-3 text-center">
+                              <div className="text-xs uppercase tracking-wide text-slate-500">Generated</div>
+                              <div className="mt-1 text-2xl font-mono tabular-nums">{r.nodesGenerated}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                </aside>
+              </div>
+              <div className="flex items-center gap-3 mt-2 text-sm">
+                <div className="flex items-center gap-2"><span className="w-3 h-3 inline-block rounded bg-sky-500"></span> A*-EARLY</div>
+                <div className="flex items-center gap-2"><span className="w-3 h-3 inline-block rounded bg-emerald-500"></span> IDA*</div>
+                <div className="flex items-center gap-2"><span className="w-3 h-3 inline-block rounded bg-amber-500"></span> ILBFS</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Playfield({ timelines, pipes, yMin, yMax, currentIdx }) {
+      const cell = 28; const heightPx = (yMax - yMin + 3) * cell; const widthCells = 24; const widthPx = widthCells * cell;
+      const worldWidthCells = useMemo(() => pipes.reduce((acc, p) => acc + p.distance + 1, 0), [pipes]);
+      const pipeWorldXs = useMemo(() => { const xs = []; let acc = 0; for (const p of pipes) { xs.push(acc + p.distance); acc += p.distance + 1; } return xs; }, [pipes]);
+      const camLeft = Math.max(0, currentIdx - Math.floor(widthCells * 0.3));
+      return (
+        <div className="relative overflow-hidden rounded-2xl border" style={{ width: widthPx, height: heightPx }}>
+          {/* Background sky */}
+          <svg width={worldWidthCells * cell} height={heightPx} style={{ position: 'absolute', left: 0, top: 0, transform: `translateX(${-camLeft * cell}px)` }}>
+            <defs>
+              <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#38bdf8" />
+                <stop offset="100%" stopColor="#bae6fd" />
+              </linearGradient>
+            </defs>
+            <rect x={0} y={0} width={worldWidthCells * cell} height={heightPx} fill="url(#skyGrad)" />
+            {Array.from({ length: Math.max(6, Math.floor(worldWidthCells/6)) }).map((_, i) => {
+              const x = i * cell * 6 + 30;
+              const y = 20 + (i % 2) * 12;
+              return (
+                <g key={`cloud${i}`} opacity={0.9}>
+                  <circle cx={x} cy={y} r={10} fill="#ffffff" />
+                  <circle cx={x+12} cy={y+2} r={12} fill="#ffffff" />
+                  <circle cx={x+26} cy={y} r={10} fill="#ffffff" />
+                </g>
+              );
+            })}
+            <rect x={0} y={heightPx-10} width={worldWidthCells * cell} height={10} fill="#86efac" />
+          </svg>
+          <svg width={worldWidthCells * cell} height={heightPx} style={{ position: 'absolute', left: 0, top: 0, transform: `translateX(${-camLeft * cell}px)` }}>
+            {Array.from({ length: worldWidthCells + 1 }).map((_, i) => (
+              <line key={`v${i}`} x1={i*cell} y1={0} x2={i*cell} y2={heightPx} stroke="#e5e7eb" strokeWidth={i%5===0?1.2:0.6} />
+            ))}
+            {Array.from({ length: (yMax - yMin + 2) }).map((_, j) => (
+              <line key={`h${j}`} x1={0} y1={j*cell} x2={worldWidthCells*cell} y2={j*cell} stroke="#e5e7eb" strokeWidth={j%5===0?1.2:0.6} />
+            ))}
+            {pipes.map((p, idx) => {
+              const worldX = pipeWorldXs[idx]; const xPix = worldX * cell;
+              // Upper pipe ends one cell above (U-1) to reflect strict y < U
+              const gapTop = (yMax - (p.U + 1)) * cell; const gapBottom = (yMax - (p.L + 1)) * cell;
+              return (
+                <g key={`pipe${idx}`}>
+                  <rect x={xPix-4} y={0} width={8} height={gapTop} fill="#22c55e" />
+                  <rect x={xPix-4} y={gapBottom} width={8} height={heightPx - gapBottom} fill="#22c55e" />
+                </g>
+              );
+            })}
+          </svg>
+          {timelines['A*'] && <BirdTrail coords={timelines['A*']} color="#0ea5e9" camLeft={camLeft} cell={cell} yMax={yMax} label="A*" idx={currentIdx} />}
+          {timelines['IDA*'] && <BirdTrail coords={timelines['IDA*']} color="#22c55e" camLeft={camLeft} cell={cell} yMax={yMax} label="IDA*" idx={currentIdx} />}
+          {timelines['ILBFS'] && <BirdTrail coords={timelines['ILBFS']} color="#f59e0b" camLeft={camLeft} cell={cell} yMax={yMax} label="ILBFS" idx={currentIdx} />}
+        </div>
+      );
+    }
+
+    const rootEl = document.getElementById('root');
+    if (rootEl) {
+      const root = ReactDOM.createRoot(rootEl);
+      root.render(<App />);
+    }
+  </script>
+</body>
+</html>
+

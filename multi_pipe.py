@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Tuple, Optional
 
 from search_core import SearchResult
-from search_core import astar_early, idastar, ilbfs
+from search_core import astar_early, idastar, ilbfs, ucs
 from flappy_1d import Flappy1D, BirdState, clicks_heuristic_factory
 
 @dataclass(frozen=True)
@@ -19,6 +19,10 @@ class MultiRunResult:
     total_cost: float
     total_nodes_expanded: int
     total_nodes_generated: int
+    total_nodes_duplicate: int 
+    max_seen_states_peak_bytes: int      # NEW: max over segments within this run
+    max_open_size: int                 # NEW: max of per-segment open_size_peak in this run
+
     total_elapsed_sec: float
     per_pipe: List[SearchResult]
     # combined path: (pipe_index, state, action)
@@ -31,7 +35,9 @@ def pick_algo(name: str) -> Callable:
         return idastar
     if name.lower() in ("ilbfs", "rbfs"):
         return ilbfs
-    raise ValueError("algo must be one of: astar | idastar | ilbfs")
+    if name.lower() in ("ucs", "uniform", "dijkstra"):
+        return ucs
+    raise ValueError("algo must be one of: astar | idastar | ilbfs | ucs")
 
 def solve_pipes(
     initial_y: int,
@@ -54,6 +60,10 @@ def solve_pipes(
     total_cost = 0.0
     total_nodes_expanded = 0
     total_nodes_generated = 0
+    total_nodes_duplicate = 0   # NEW
+    max_seen_states_peak_bytes = 0             # NEW
+    max_open_size = 0  # NEW
+
     total_elapsed_sec = 0.0
 
     y_current = initial_y
@@ -66,10 +76,16 @@ def solve_pipes(
 
         # Run the chosen algorithm
         res = algo_fn(problem, h)  # type: ignore[arg-type]
+        if res.open_size_peak > max_open_size:
+            max_open_size = res.open_size_peak
         per.append(res)
         total_nodes_expanded += res.nodes_expanded
         total_nodes_generated += res.nodes_generated
+        total_nodes_duplicate += res.duplicate_nodes   # NEW
+
         total_elapsed_sec += res.elapsed_sec
+        if res.seen_bytes_peak > max_seen_states_peak_bytes:    # NEW
+            max_seen_states_peak_bytes = res.seen_bytes_peak
 
         if not res.found:
             # Return what we have so far; found_all=False
@@ -78,6 +94,10 @@ def solve_pipes(
                 total_cost=total_cost,
                 total_nodes_expanded=total_nodes_expanded,
                 total_nodes_generated=total_nodes_generated,
+                total_nodes_duplicate=total_nodes_duplicate,
+                max_seen_states_peak_bytes=max_seen_states_peak_bytes,   # NEW
+                max_open_size=max_open_size,  # NEW
+
                 total_elapsed_sec=total_elapsed_sec,
                 per_pipe=per,
                 full_path=full_path,
@@ -101,6 +121,10 @@ def solve_pipes(
         total_cost=total_cost,
         total_nodes_expanded=total_nodes_expanded,
         total_nodes_generated=total_nodes_generated,
+        total_nodes_duplicate=total_nodes_duplicate,   # NEW
+        max_seen_states_peak_bytes=max_seen_states_peak_bytes,   # NEW
+        max_open_size=max_open_size,  # NEW
+
         total_elapsed_sec=total_elapsed_sec,
         per_pipe=per,
         full_path=full_path,

@@ -57,7 +57,7 @@ class Flappy1D(SearchProblem):
         # NO_CLICK child
         s_none = BirdState(y_down, x2)
         if self._is_safe(s_none):
-            yield (NO_CLICK, s_none, 0.0)  # no-click cost = 0
+            yield (NO_CLICK, s_none, 0.0001)  # no-click cost = 0
 
 
 def clicks_heuristic_factory(L: int) -> HeuristicFn:
