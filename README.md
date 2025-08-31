@@ -22,9 +22,10 @@ We implement and compare the following search algorithms, and study two ways to 
 
 ```text
 FlappyBird/
-├─ search_core.py                  # Core search engines: A*-early, IDA*, UCS, ILBFS (RBFS-style)
-├─ flappy_1d.py                    # Environment: state, successors, heuristic (clicks_heuristic_factory)
-├─ multi_pipe.py                   # Greedy vs global-coordination multi-pipe planner (+ metrics)
+├─ search_core.py                  # Core search engines: A*-early, IDA*, UCS, RBFS
+├─ flappy_1d.py                    # Environment: state, successors, heuristic 
+├─ multi_pipe.py                   # Greedy multi-pipe planner
+├─ multi_pipe_new.py               # Global-coordination multi-pipe planne
 ├─ run_multi.py                    # Batch runner: runs experiments and prints aggregated stats
 ├─ flappy_1d_visualizer_standalone.html  # Browser visualizer for single/multi-pipe courses
 └─ README.md
